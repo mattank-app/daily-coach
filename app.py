@@ -7,19 +7,24 @@ import streamlit as st
 from google import genai
 from google.genai import types
 
-# Page Config & Interface Setup
+# 1. Page Config & Interface Setup
 st.set_page_config(page_title="Trail Endurance Coach", page_icon="🏔️", layout="centered")
 
 st.title("🏔️ Trail Endurance Coach")
-st.subheader("Post-Workout Audit & Adaptive Scheduler")
+st.subheader("Adaptive Analytics & Training Planner")
 
-# Verify access to secure keys inside Streamlit environment secrets
+# ==========================================
+# SECURE ACCESS TO ENVIRONMENT SECRETS
+# ==========================================
 try:
     os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
 except KeyError:
     st.error("Configuration Error: Missing GEMINI_API_KEY in Streamlit Secrets.")
     st.stop()
 
+# ==========================================
+# MULTI-USER SIDEBAR AUTHENTICATION & CONTEXT
+# ==========================================
 with st.sidebar:
     st.header("⚙️ Athlete Setup")
     st.markdown("Connect your Intervals.icu account.")
@@ -28,17 +33,21 @@ with st.sidebar:
     user_api_key = st.text_input("Intervals API Key", type="password")
     
     st.markdown("---")
-    st.header("📅 Periodization Settings")
-    
-    # Active Microcycle context dictates the severity of the coach's fatigue penalties
-    selected_microcycle = st.selectbox(
-        "Current Microcycle Context:",
+    st.header("📋 Analysis Mode")
+    analysis_mode = st.selectbox(
+        "Select Coach Audit Focus:",
         [
-            "Build/Load Microcycle (Progressive volume focus)",
-            "Peak Overload Microcycle (High stress / overload)",
-            "Recovery/Deload Microcycle (Fatigue shedding focus)",
-            "Taper Microcycle (Freshness & taper activation)"
+            "Post-Workout Compliance (PM)", 
+            "Morning Readiness Check (AM)", 
+            "Weekly Performance Review"
         ]
+    )
+    
+    st.markdown("---")
+    st.header("📊 Training Context")
+    microcycle_context = st.selectbox(
+        "Current Microcycle:",
+        ["Build Phase (Standard Load)", "Peak / Overload Phase", "Recovery / Deload Week", "Taper (Pre-Race)"]
     )
     
     st.markdown("---")
@@ -54,6 +63,9 @@ if "athlete_id" not in st.session_state or "api_key" not in st.session_state:
     st.info("👈 Please set up your Intervals.icu connection in the sidebar to begin your adaptive coaching session.")
     st.stop()
 
+# ==========================================
+# TOOL 1: PHYSIOLOGICAL WELLNESS METRICS
+# ==========================================
 def get_daily_wellness(days: int = 14) -> dict:
     """Fetches biological wellness markers (CTL, ATL, TSB, HRV, RHR) from Intervals.icu."""
     st.toast(f"📡 Coach is pulling your wellness data for the last {days} days...", icon="❤️")
@@ -87,11 +99,13 @@ def get_daily_wellness(days: int = 14) -> dict:
                 })
             return {"status": "success", "wellness_history": wellness_log}
         else:
-            print(f"CRITICAL API ERROR: {response.status_code} - {response.text}")
             return {"status": "error", "message": f"Wellness API failed: {response.status_code}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# ==========================================
+# TOOL 2: TRAINING ACTIVITIES PERFORMANCE AUDIT
+# ==========================================
 def get_weekly_activities(days: int = 7) -> dict:
     """Fetches completed raw activity logs from Intervals.icu."""
     st.toast(f"📡 Coach is pulling your activity logs for the last {days} days...", icon="🏃")
@@ -161,6 +175,9 @@ def get_weekly_activities(days: int = 7) -> dict:
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# ==========================================
+# TOOL 3: UPCOMING TRAINING SCHEDULE
+# ==========================================
 def get_scheduled_workouts(days_ahead: int = 7) -> dict:
     """Fetches scheduled training calendar events directly from Intervals.icu."""
     st.toast(f"📅 Coach is downloading your upcoming calendar plan for the next {days_ahead} days...", icon="📅")
@@ -190,11 +207,13 @@ def get_scheduled_workouts(days_ahead: int = 7) -> dict:
                     })
             return {"status": "success", "upcoming_schedule": scheduled}
         else:
-            print(f"CRITICAL CALENDAR ERROR: {response.status_code} - {response.text}")
             return {"status": "error", "message": f"Calendar API failed: {response.status_code}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# ==========================================
+# 3. CHAT ENGINE & PERSISTENT SESSION STATE
+# ==========================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -210,106 +229,95 @@ def load_knowledge_base():
     file_name = "Knowledge feed trail running.pdf" 
     if os.path.exists(file_name):
         uploaded_file = client.files.upload(file=file_name)
-        
         while uploaded_file.state == "PROCESSING":
             time.sleep(2)
             uploaded_file = client.files.get(name=uploaded_file.name)
-            
         return uploaded_file
     return None
 
 knowledge_document = load_knowledge_base()
 
-# Initialize or reset the chat session if it doesn't exist OR if microcycle changed
-# Initialize the unified Post-Workout Audit session
-if "chat_session" not in st.session_state:
-    system_text = (
-        "Purpose & Persona:\n"
-        "You are an elite, unyielding ultra-trail and mountain endurance running coach. Your focus is to evaluate the athlete's "
-        "most recent completed trail/run workout for aerobic compliance, then automatically cross-reference their upcoming scheduled "
-        "workouts from their Intervals.icu calendar to dynamically plan and prescribe their next session's parameters (intensity, duration, and heart rate caps).\n\n"
-        "Coaching Audit & Adaptive Planning Steps:\n"
-        "1. Past Workout Audit: Pull the completed activities. Examine the most recent workout. Check for pacing compliance (Zones 1 & 2 time must be >= 80%). "
-        "Flag Zone 3 & 4 'Gray Zone' intrusion. Analyze Cardiac Drift (decoupling %): if decoupling is > 5%, the athlete's aerobic cap is compromised.\n"
-        "2. Scheduled Plan Integration: Pull the upcoming planned calendar workouts using get_scheduled_workouts. Find the next scheduled workout (e.g., Run, ME, Recovery).\n"
-        "3. Predictive Adjustments: Synthesize past workout performance and current recovery markers (HRV/TSB from wellness metrics). "
-        "Construct concrete guidelines for the next training session:\n"
-        "   - GREEN PATH (Decoupling < 5%, compliance > 80%): Approve the next scheduled session as written. Confirm target duration and heart rate caps.\n"
-        "   - AMBER PATH (Decoupling 5-10%, or gray zone encroachment): Drop the next session's target duration by 10-20% and lower the target HR ceiling by 5-10 bpm.\n"
-        "   - RED PATH (Decoupling > 10%, or TSB < -30): Suggest scrapping the scheduled high-intensity or long session. Replace it with an active recovery workout or rest day.\n\n"
-        "Response Formatting Requirements:\n"
-        "You MUST strictly structure your output using exactly the following four headings:\n"
-        "## ## The Workout Numbers\n"
-        "## ## Pacing Discipline Score\n"
-        "## ## Cardiovascular Aerobic Drift\n"
-        "## ## Adaptive Next Move Plan\n\n"
-        "Your 'Adaptive Next Move Plan' must explicitly compare what was scheduled in the Intervals calendar versus what you are recommending in terms of duration, intensity, or heart rate targets.\n\n"
-        "CRITICAL ESCAPE HATCH:\n"
-        "If the tool calls return an error, or no completed/scheduled activities are found, output plain text explaining what failed instead of empty headings."
-    )
+# Initialize the session ONLY if it doesn't exist OR if mode/microcycle changed
+if ("chat_session" not in st.session_state or 
+    st.session_state.get("current_mode") != analysis_mode or
+    st.session_state.get("current_microcycle") != microcycle_context):
+    
+    st.session_state.current_mode = analysis_mode
+    st.session_state.current_microcycle = microcycle_context
+    st.session_state.pdf_attached = False  # Reset so we hand the PDF over cleanly on the first prompt
+    
+    # Customise system prompts dynamically based on the sidebar selectors
+    if analysis_mode == "Morning Readiness Check (AM)":
+        system_text = (
+            "Purpose & Persona:\n"
+            "You are an elite ultra-trail running and mountain endurance coach. Your role is to act as a morning sounding board. "
+            "Your athlete is starting their day. You must run a Morning Readiness Check analyzing the last 14 days of wellness. "
+            "Determine if they are cleared to train or if today's plan must be adjusted based on recovery metrics.\n\n"
+            "Morning Audit Methodology Workflow:\n"
+            "1. Autonomic System Drift: Compare today's HRV (rMSSD) and Resting HR against their rolling 7-day average. "
+            "Identify deviations. Compare sleep metrics and muscle soreness ratings.\n"
+            "2. Current Form (TSB): Check if TSB is entering severe overload zones (below -30) or if they are in optimal windows (-10 to -30).\n"
+            "3. Actionable Workout Prescription: Based on these metrics, prescribe an explicit today's training target "
+            "(Go-ahead, reduced ceiling, active recovery, or complete rest).\n\n"
+            "Response Structure:\n"
+            "You MUST strictly format your entire response using the following four headings:\n"
+            "## ## The AM Readiness Metrics\n"
+            "## ## Autonomic System Analysis\n"
+            "## ## Today's Workout Ceiling\n"
+            "## ## Recovery/Pivot Protocol\n\n"
+        )
+    elif analysis_mode == "Post-Workout Compliance (PM)":
+        system_text = (
+            "Purpose & Persona:\n"
+            "You are an elite, unyielding ultra-trail and mountain endurance coach. Your focus is to evaluate the athlete's "
+            "most recent completed workout for aerobic compliance, then cross-reference upcoming scheduled "
+            "workouts from their Intervals.icu calendar to dynamically plan their next session.\n\n"
+            "Coaching Audit & Adaptive Planning Steps:\n"
+            "1. Past Workout Audit: Examine the most recent workout. Check pacing compliance (Zones 1 & 2 time must be >= 80%). "
+            "Flag Zone 3 & 4 'Gray Zone' intrusion. Analyze Cardiac Drift (decoupling %): if > 5%, the aerobic cap is compromised.\n"
+            "2. Scheduled Plan Integration: Pull upcoming calendar workouts. Find the next scheduled workout. "
+            "DO NOT suggest a make-up session if yesterday was missed. DO NOT create a workout on an empty rest day.\n"
+            "3. Predictive Adjustments: Synthesize past workout performance and current recovery markers (HRV/TSB).\n"
+            "   - GREEN PATH (Decoupling < 5%, compliance > 80%): Approve the next scheduled session as written.\n"
+            "   - AMBER PATH (Decoupling 5-10%, or gray zone): Drop the next session's target duration by 10-20% and lower HR ceiling by 5-10 bpm.\n"
+            "   - RED PATH (Decoupling > 10%, or TSB < -30): Suggest scrapping the scheduled high-intensity session for active recovery or rest.\n\n"
+            "Response Structure:\n"
+            "You MUST strictly structure your output using exactly the following four headings:\n"
+            "## ## The Workout Numbers\n"
+            "## ## Pacing Discipline Score\n"
+            "## ## Cardiovascular Aerobic Drift\n"
+            "## ## Adaptive Next Move Plan\n\n"
+            "Your 'Adaptive Next Move Plan' must explicitly compare what was scheduled versus what you recommend.\n\n"
+        )
+    else:  # Weekly Performance Review
+        system_text = (
+            "Purpose & Persona:\n"
+            "You are an elite ultra-trail running and mountain endurance coach. Your role is to act as a weekly sounding board, "
+            "an analytical engine, and an unyielding accountability partner.\n\n"
+            "Core Methodology Workflow:\n"
+            "1. The Holy Trinity Analysis: Always state and interpret current Fitness (CTL), Fatigue (ATL), and Form (TSB).\n"
+            "2. 80/20 Rule Check: Ensure easy and long runs are strictly in Zone 1/Zone 2.\n"
+            "3. Aerobic Decoupling: Analyze long weekend efforts to check for cardiac drift.\n"
+            "4. Muscular Endurance (ME): Verify execution of sport-specific strength progressions.\n\n"
+            "Weekly Feedback Structure:\n"
+            "You MUST strictly format your entire response using the following four headings:\n"
+            "## ## The Numbers\n"
+            "## ## The Bright Spots\n"
+            "## ## The Brutal Truth\n"
+            "## ## The Next Move\n\n"
+        )
 
-    # 🌟 FIX: Convert all parts explicitly to Part objects
-    system_parts = [types.Part.from_text(text=system_text)]
-    if knowledge_document:
-        system_parts.append(types.Part.from_uri(file_uri=knowledge_document.uri, mime_type=knowledge_document.mime_type))
-        system_parts.append(types.Part.from_text(text="CRITICAL: Read the attached manual. Use its frameworks to judge the athlete's data."))
+    # Inject Microcycle Context and Escape Hatch into System Text
+    system_text += f"CRITICAL CONTEXT: The athlete is currently in a '{microcycle_context}' phase. Adjust your physiological assessments, toughness, and recovery expectations to match this periodization cycle strictly.\n\n"
+    system_text += "CRITICAL ESCAPE HATCH:\nIf tool calls return an error, OR if no data is found, output plain text explaining what failed instead of the required headings."
 
-    # 🌟 FIX: Wrap system parts in a clean types.Content container
-    system_instruction_content = types.Content(parts=system_parts)
-
+    # Create the session with PURE TEXT system instructions to prevent 400 ClientErrors
     st.session_state.chat_session = client.chats.create(
         model="gemini-2.5-flash",
         config=types.GenerateContentConfig(
             tools=[get_daily_wellness, get_weekly_activities, get_scheduled_workouts],
             temperature=0.2,
-            system_instruction=system_instruction_content,  # Passed cleanly here
-            safety_settings=[
-                types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH"),
-                types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH")
-            ]
-        )
-    )
-    
-    # 2. Inject Dynamic Microcycle Override rules directly into system instructions
-    microcycle_rules = "\n\n--- PERIODIZATION BOUNDARIES ---\n"
-    if "Build/Load" in selected_microcycle:
-        microcycle_rules += (
-            "Current Context: BUILD / LOAD MICROCYCLE\n"
-            "- A training stress balance (TSB) of -15 to -25 is expected and highly productive.\n"
-            "- Cardiac Drift > 8% on easy runs triggers the AMBER PATH: reduce target duration of the next session by 10% to prevent excessive aerobic decay.\n"
-            "- Pacing compliance < 75% in Zone 1/2 triggers a stern reprimand for running in the gray zone, but allow upcoming Muscular Endurance (ME) sessions to proceed with strict heart rate caps."
-        )
-    elif "Peak Overload" in selected_microcycle:
-        microcycle_rules += (
-            "Current Context: PEAK OVERLOAD MICROCYCLE\n"
-            "- Expect and permit a deep TSB drop of -25 to -35 to trigger supercompensation.\n"
-            "- Expect slight suppression of HRV and a slight rise in Resting HR (RHR). Do not panic and pull back training prematurely unless autonomic markers plummet."
-        )
-    elif "Recovery/Deload" in selected_microcycle:
-        microcycle_rules += (
-            "Current Context: RECOVERY / DELOAD MICROCYCLE (ABSOLUTE REGENERATION)\n"
-            "- A negative TSB of -25 is a critical failure. The TSB must climb back toward neutral (0 to +10).\n"
-            "- Cardiac Drift > 8% triggers the RED PATH: Hard Override. Immediately cancel any scheduled intensity or mountain volume. Force active recovery or total rest.\n"
-            "- Skipping pacing discipline (gray zone running) during recovery completely resets the recovery cycle. Force an immediate active-rest phase and lock upcoming weekend runs to a max of 90 minutes."
-        )
-    elif "Taper" in selected_microcycle:
-        microcycle_rules += (
-            "Current Context: TAPER MICROCYCLE\n"
-            "- Prioritize autonomic nervous system recovery (HRV must rebound rapidly).\n"
-            "- Volume drops significantly (50% to 60% reduction), but keep short, sharp neuromuscular activations to maintain muscle tension."
-        )
-    
-    system_parts = [system_text + microcycle_rules]
-    if knowledge_document:
-        system_parts.append(types.Part.from_uri(file_uri=knowledge_document.uri, mime_type=knowledge_document.mime_type))
-        system_parts.append("CRITICAL: Read the attached manual. Use its frameworks to judge the athlete's data.")
-
-    st.session_state.chat_session = client.chats.create(
-        model="gemini-2.5-flash",
-        config=types.GenerateContentConfig(
-            tools=[get_daily_wellness, get_weekly_activities, get_scheduled_workouts],
-            temperature=0.2,
-            system_instruction=system_parts,
+            system_instruction=system_text,
             safety_settings=[
                 types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH"),
                 types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH")
@@ -322,26 +330,35 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-st.info(f"🎯 **Target Mode:** Post-Workout Audit & Adaptive Scheduler (Active Context: {selected_microcycle})")
+# 4. Interactive Live Conversation Execution
+st.info(f"🎯 **Target Mode:** {analysis_mode} | 📊 **Cycle:** {microcycle_context}")
 
-if user_input := st.chat_input("Message your coach... (e.g., 'Audit my last run and plan my next move')"):
+if user_input := st.chat_input("Message your coach..."):
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
         
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing performance compliance and fetching upcoming training blocks..."):
-            # Compute dates dynamically so the LLM has absolute, real-time clock awareness of what "tomorrow" is
-            today_dt = datetime.date.today()
-            tomorrow_dt = today_dt + datetime.timedelta(days=1)
+        with st.spinner("Analyzing physiological markers and training logs..."):
             
-            # Inject dynamic time context into the message stream transparently
-            time_context = (
-                f"\n\n[SYSTEM CONTEXT - DO NOT ECHO VERBATIM: Today is {today_dt.strftime('%A, %b %d, %Y')}. "
-                f"Tomorrow is {tomorrow_dt.strftime('%A, %b %d, %Y')}. Execute your assessment relative to these dates.]"
-            )
+            # 1. Build the dynamic time context so the AI knows what "tomorrow" is
+            today = datetime.datetime.now()
+            tomorrow = today + datetime.timedelta(days=1)
+            time_context = f"\n\n[SYSTEM CONTEXT: Today is {today.strftime('%A, %B %d, %Y')}. Tomorrow is {tomorrow.strftime('%A, %B %d, %Y')}.]"
             
-            response = st.session_state.chat_session.send_message(user_input + time_context)
+            # 2. Safely package the user's message as a strongly-typed Part
+            message_parts = [
+                types.Part.from_text(text=user_input + time_context)
+            ]
+            
+            # 3. If this is the very first message of the session, silently attach the PDF to the user prompt
+            if not st.session_state.get("pdf_attached") and knowledge_document:
+                message_parts.append(types.Part.from_uri(file_uri=knowledge_document.uri, mime_type=knowledge_document.mime_type))
+                message_parts.append(types.Part.from_text(text="CRITICAL: Read the attached manual. Use its frameworks to judge the athlete's data."))
+                st.session_state.pdf_attached = True
+            
+            # 4. Send the perfectly formatted payload
+            response = st.session_state.chat_session.send_message(message_parts)
             
             if response.text:
                 st.markdown(response.text)
