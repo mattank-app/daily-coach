@@ -207,7 +207,7 @@ client = get_genai_client()
 @st.cache_resource
 def load_knowledge_base():
     """Uploads the manual and ensures processing is finished before conversation initialization."""
-    file_name = "training_manual.pdf" 
+    file_name = "Knowledge feed trail running.pdf" 
     if os.path.exists(file_name):
         uploaded_file = client.files.upload(file=file_name)
         
