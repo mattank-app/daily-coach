@@ -113,8 +113,10 @@ def get_daily_wellness(days: int = 14) -> dict:
                     "fatigue_atl": atl,
                     "form_tsb": calculated_tsb,
                     "hrv_rmssd": d.get("hrv"),
-                    "resting_hr": d.get("restingHR") or d.get("restingHr") or d.get("resting_hr") or d.get("icu_resting_hr"),
+                    "restingHR": d.get("restingHR"),
                     "sleep_hours": round(d.get("sleepSecs") / 3600, 1) if d.get("sleepSecs") else None,
+                    "sleepScore": d.get("sleepScore"),
+                    "sleepQuality": d.get("sleepQuality"),
                     "muscle_soreness": d.get("soreness"),
                     "fatigue_rating": d.get("fatigue")
                 })
