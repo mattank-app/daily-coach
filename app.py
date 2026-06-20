@@ -58,6 +58,27 @@ with st.sidebar:
         st.session_state.api_key = user_api_key
     else:
         st.warning("Please enter your credentials to unlock the coach.")
+       
+    # ==========================================
+    # NEW: X-RAY DEBUGGER BUTTON
+    # ==========================================
+    st.markdown("---")
+    if st.button("🔍 Debug: Fetch Raw Wellness Data"):
+        if st.session_state.get("athlete_id") and st.session_state.get("api_key"):
+            now = datetime.datetime.now()
+            oldest = (now - datetime.timedelta(days=2)).strftime('%Y-%m-%d')
+            newest = now.strftime('%Y-%m-%d')
+            url = f"https://intervals.icu/api/v1/athlete/{st.session_state.athlete_id}/wellness?oldest={oldest}&newest={newest}"
+            try:
+                resp = requests.get(url, auth=HTTPBasicAuth('API_KEY', st.session_state.api_key))
+                if resp.status_code == 200:
+                    st.json(resp.json())
+                else:
+                    st.error(f"API Error: {resp.status_code}")
+            except Exception as e:
+                st.error(f"Failed to connect: {str(e)}")
+        else:
+            st.warning("Enter your credentials above first.")
 
 if "athlete_id" not in st.session_state or "api_key" not in st.session_state:
     st.info("👈 Please set up your Intervals.icu connection in the sidebar to begin your adaptive coaching session.")
@@ -92,14 +113,11 @@ def get_daily_wellness(days: int = 14) -> dict:
                     "fatigue_atl": atl,
                     "form_tsb": calculated_tsb,
                     "hrv_rmssd": d.get("hrv"),
-                    "resting_hr": d.get("restingHR") or d.get("restingHr") or d.get("resting_hr"),
+                    "resting_hr": d.get("restingHR") or d.get("restingHr") or d.get("resting_hr") or d.get("icu_resting_hr"),
                     "sleep_hours": round(d.get("sleepSecs") / 3600, 1) if d.get("sleepSecs") else None,
                     "muscle_soreness": d.get("soreness"),
                     "fatigue_rating": d.get("fatigue")
                 })
-            # THE X-RAY DEBUGGER: Prints the raw data to your sidebar so you can see the truth
-            with st.sidebar.expander("🔍 Debug: View Raw Wellness Data"):
-                st.json(recent_days[-2:])  # Shows the raw JSON for the last 2 days
                 
             return {"status": "success", "wellness_history": wellness_log}
         else:
